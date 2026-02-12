@@ -185,7 +185,7 @@ function ThinkingIndicator() {
 function DevicePreview() {
   return (
     <div className="relative w-[300px] h-[620px]">
-      <div className="absolute inset-0 blur-2xl opacity-30" style={{ background: BRAND.primary }} />
+      <div className="absolute inset-0 blur-2xl opacity-30" style={{ background: "#ffffff" }} />
 
       <div className="relative w-full h-full bg-black rounded-[40px] border border-gray-800 shadow-2xl overflow-hidden">
         <img
@@ -436,19 +436,26 @@ setMessages((prev) => [
 setExpandedRun(null); // 👈 ensure collapsed by default
 
       /* ================= BOT FOLLOW-UP MESSAGE ================= */
-      setTimeout(() => {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: Date.now() + "-bot",
-            role: "bot",
-            text:
-              result === "Passed"
-                ? "Great! The test passed. Would you like me to validate another flow?"
-                : "I found a failure. Want me to debug it or try another scenario?",
-          },
-        ]);
-      }, 250); // small delay → natural chat feel
+setMessages((prev): ChatMessage[] => {
+  const botMessage: ChatMessage = {
+    id: Date.now() + "-bot",
+    role: "bot",
+    text:
+      result === "Passed"
+        ? "Great! The test passed. Would you like me to validate another flow?"
+        : "I found a failure. Want me to debug it or try another scenario?",
+  };
+
+  const updated = [...prev, botMessage];
+
+  // scroll AFTER DOM paint
+  setTimeout(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, 50);
+
+  return updated;
+});
+
 
       /* ================= HISTORY SIDEBAR ================= */
       setHistory((h) => [
@@ -486,8 +493,8 @@ bg-white/40
 backdrop-blur-xl
 backdrop-saturate-150
 
-border border-white/30
-shadow-[0_8px_32px_rgba(0,0,0,0.12)]
+border border-gray-200
+shadow-sm
 " style={{ borderRadius: 4 }}>
 
           {/* HEADER */}
