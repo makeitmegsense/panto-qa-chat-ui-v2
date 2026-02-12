@@ -5,6 +5,19 @@ import { motion, AnimatePresence } from "framer-motion";
 
 type Mode = "autonomous" | "guided";
 type StepStatus = "pending" | "running" | "success" | "failed";
+type ChatMessage =
+  | {
+      id: string;
+      role: "user" | "bot";
+      text: string;
+    }
+  | {
+      id: string;
+      role: "execution";
+      testName: string;
+      result: "Passed" | "Failed";
+      steps: ExecutionStep[];
+    };
 
 interface ExecutionStep {
   id: string;
@@ -19,7 +32,6 @@ interface TestHistory {
   result: "Passed" | "Failed";
   duration: string;
 }
-
 /* ================= BRAND ================= */
 
 const BRAND = {
@@ -28,26 +40,83 @@ const BRAND = {
   gray: "#6B7280",
 };
 
+/* ================= HEADER ================= */
+function ExecuteHeader() {
+  return (
+    <div className="w-full border-b border-gray-200 bg-white px-6 py-4 flex items-center justify-between">
+      
+      {/* LEFT: breadcrumb + title */}
+      <div>
+        <div className="text-sm text-gray-500">
+          Execute / Create New Test Flow
+        </div>
+        <h1 className="text-2xl font-semibold text-gray-900 mt-1">
+          Execute Test Flow
+        </h1>
+        <p className="text-sm text-gray-500">
+          Select a device to start automating your scenario
+        </p>
+      </div>
+
+      {/* RIGHT: actions */}
+      <div className="flex items-center gap-3">
+        <button className="px-4 py-2 rounded-lg border border-teal-500 text-teal-600 font-medium hover:bg-teal-50 transition">
+          Refresh
+        </button>
+
+        <button
+          className="px-5 py-2 rounded-lg text-white font-semibold shadow-sm hover:opacity-90 transition"
+          style={{ background: BRAND.primary }}
+        >
+          + Connect Device
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /* ================= STREAMING TEXT ================= */
 
-function StreamingText({ text }: { text: string }) {
-  const [visible, setVisible] = useState("");
+function StreamingText({
+  text,
+  delay = 0,
+  animate = true,
+}: {
+  text: string;
+  delay?: number;
+  animate?: boolean;
+}) {
+  const [visible, setVisible] = useState(animate ? "" : text);
 
   useEffect(() => {
-    setVisible("");
+    if (!animate) {
+      setVisible(text);
+      return;
+    }
+
+    let timeout: ReturnType<typeof setInterval>;
     let i = 0;
 
-    const id = setInterval(() => {
-      i++;
-      setVisible(text.slice(0, i));
-      if (i >= text.length) clearInterval(id);
-    }, 12);
+    const start = () => {
+      timeout = setInterval(() => {
+        i++;
+        setVisible(text.slice(0, i));
+        if (i >= text.length) clearInterval(timeout);
+      }, 32); //slow
+    };
 
-    return () => clearInterval(id);
-  }, [text]);
+    const delayTimer = setTimeout(start, delay);
+
+    return () => {
+      clearTimeout(delayTimer);
+      clearInterval(timeout);
+    };
+  }, [text, delay, animate]);
 
   return <>{visible}</>;
 }
+
+
 
 /* ================= SIDEBAR ================= */
 
@@ -106,7 +175,7 @@ function ThinkingIndicator() {
           />
         ))}
       </div>
-      <span className="text-gray-500 font-medium">Mahoraga is working…</span>
+      <span className="text-gray-500 font-medium">Panto QA is thinking…</span>
     </div>
   );
 }
@@ -252,16 +321,28 @@ export default function ChatLayout() {
   const [error, setError] = useState<string | null>(null);
   const [finished, setFinished] = useState<"Passed" | "Failed" | null>(null);
   const [history, setHistory] = useState<TestHistory[]>([]);
-
-  /* === NEW: persistent chat history === */
   const [chatRuns, setChatRuns] = useState<ExecutionStep[][]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [expandedRun, setExpandedRun] = useState<number | null>(null);
+  const [currentTestName, setCurrentTestName] = useState<string | null>(null);
+
+
+  useEffect(() => {
+  setMessages([
+    {
+      id: "welcome",
+      role: "bot",
+      text: "Hi! I’m your QA assistant. What scenario would you like me to test today?"
+    }
+  ]);
+}, []);
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [steps, running, finished, chatRuns]);
+useEffect(() => {
+  chatEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+}, [messages, running]);
 
   const validateInput = (text: string) => {
     if (!text.trim()) return "Please enter a task to test.";
@@ -269,145 +350,397 @@ export default function ChatLayout() {
     return null;
   };
 
-  const runTest = () => {
-    const validationError = validateInput(input);
-    if (validationError) {
-      setError(validationError);
-      return;
-    }
+const runTest = () => {
+  const validationError = validateInput(input);
+  if (validationError) {
+    setError(validationError);
+    return;
+  }
 
-    setError(null);
+  setError(null);
 
-    const fail = input.toLowerCase().includes("orange");
+  const taskName = input; // capture before clearing
+  const fail = taskName.toLowerCase().includes("orange");
 
-    const generatedSteps =
-      mode === "guided"
-        ? GUIDED_STEPS.map((title, i) => ({
-            id: String(i + 1),
-            title,
-            logs: [],
-            status: "pending" as StepStatus,
-          }))
-        : buildAutonomousSteps(input, fail);
+  /* ================= ADD USER MESSAGE FIRST ================= */
+  setMessages((prev) => [
+    ...prev,
+    { id: Date.now() + "-user", role: "user", text: taskName },
+  ]);
 
-    setSteps(generatedSteps);
-    setRunning(true);
-    setFinished(null);
-    setExpanded("1");
+  /* ================= BUILD STEPS ================= */
+  const generatedSteps =
+    mode === "guided"
+      ? GUIDED_STEPS.map((title, i) => ({
+          id: String(i + 1),
+          title,
+          logs: [],
+          status: "pending" as StepStatus,
+        }))
+      : buildAutonomousSteps(taskName, fail);
 
-    let index = 0;
+  setSteps(generatedSteps);
+  setRunning(true);
+  setFinished(null);
+  setExpanded("1");
 
-    intervalRef.current = setInterval(() => {
+  let index = 0;
+
+  intervalRef.current = setInterval(() => {
+    setSteps((prev) =>
+      prev.map((s, i) => {
+        if (i < index) return { ...s, status: "success" };
+        if (i === index) return { ...s, status: "running" };
+        return s;
+      })
+    );
+
+    setExpanded(String(index + 1));
+    index++;
+
+    /* ================= TEST FINISHED ================= */
+    if (index >= 4) {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+
+      const result: "Passed" | "Failed" = fail ? "Failed" : "Passed";
+
       setSteps((prev) =>
-        prev.map((s, i) => {
-          if (i < index) return { ...s, status: "success" };
-          if (i === index) return { ...s, status: "running" };
-          return s;
-        })
+        prev.map((s, i) => ({
+          ...s,
+          status: i === 3 && fail ? "failed" : "success",
+        }))
       );
 
-      setExpanded(String(index + 1));
-      index++;
+      setRunning(false);
+      setFinished(result);
+      setExpanded(null);
 
-      if (index >= 4) {
-        if (intervalRef.current) clearInterval(intervalRef.current);
+      /* =========================================================
+         INSERT EXECUTION CARD INTO CHAT (CRITICAL FIX)
+         This ensures conversational order:
+         user → execution → bot
+      ========================================================= */
+const executionId = String(Date.now());
 
-        const failCase = input.toLowerCase().includes("orange");
-        const result: "Passed" | "Failed" = failCase ? "Failed" : "Passed";
+setMessages((prev) => [
+  ...prev,
+  {
+    id: executionId,
+    role: "execution",
+    testName: taskName,
+    result,
+    steps: generatedSteps,
+  },
+]);
 
-        setSteps((prev) =>
-          prev.map((s, i) => ({
-            ...s,
-            status: i === 3 && failCase ? "failed" : "success",
-          }))
-        );
+setExpandedRun(null); // 👈 ensure collapsed by default
 
-        setRunning(false);
-        setFinished(result);
-        setExpanded(null);
-
-        /* === store finished run in chat history === */
-        setChatRuns((prev) => [...prev, generatedSteps]);
-
-        setHistory((h) => [
-          { id: Date.now(), name: input, result, duration: "1m 42s" },
-          ...h,
+      /* ================= BOT FOLLOW-UP MESSAGE ================= */
+      setTimeout(() => {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: Date.now() + "-bot",
+            role: "bot",
+            text:
+              result === "Passed"
+                ? "Great! The test passed. Would you like me to validate another flow?"
+                : "I found a failure. Want me to debug it or try another scenario?",
+          },
         ]);
+      }, 250); // small delay → natural chat feel
 
-        setInput("");
-      }
-    }, 1800);
-  };
+      /* ================= HISTORY SIDEBAR ================= */
+      setHistory((h) => [
+        { id: Date.now(), name: taskName, result, duration: "1m 42s" },
+        ...h,
+      ]);
+
+      /* ================= CLEAR INPUT ================= */
+      setInput("");
+    }
+  }, 1800);
+};
+
+
+
 
   return (
-    <div className="flex bg-white min-h-screen text-gray-900">
-      <Sidebar />
+<div className="flex bg-white h-screen overflow-hidden text-gray-900">
+    <Sidebar />
 
-      <div className="flex-1 p-6 grid grid-cols-[1fr_360px] gap-8">
+  <div className="flex-1 flex flex-col overflow-hidden">
+  <ExecuteHeader />
+
+<div className="p-6 grid grid-cols-[1fr_360px] gap-8 flex-1 min-h-0 overflow-hidden">
         {/* ================= CHAT ================= */}
-        <div className="flex flex-col h-[calc(100vh-48px)]">
+        <div className="flex flex-col min-h-0 flex-1">
 
-  {/* CHAT AREA gets full priority height */}
-  <div className="flex flex-col flex-1 min-h-0">
+  {/* CHAT AREA*/}
+  <div className="
+flex flex-col flex-1 min-h-0
+p-6
+rounded-[4px]
+
+bg-white/40
+backdrop-blur-xl
+backdrop-saturate-150
+
+border border-white/30
+shadow-[0_8px_32px_rgba(0,0,0,0.12)]
+" style={{ borderRadius: 4 }}>
 
           {/* HEADER */}
           <div className="border-b border-gray-200 pb-4 mb-4 flex items-center justify-between">
             <div>
               <div className="text-xs text-gray-400">Android Emulator • QA Execution</div>
               <div className="flex items-center gap-3">
-                <h1 className="text-lg font-semibold">{steps[0]?.title || "New QA Task"}</h1>
+                <h1 className="text-lg font-semibold">{history[0]?.name || "New QA Task"}</h1>
                 {running && (
-                  <span className="text-xs px-2 py-1 rounded-full bg-teal-50 text-teal-700 font-medium">
-                    Running
-                  </span>
-                )}
+  <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-teal-50">
+    <div className="flex gap-1">
+      {[0, 0.15, 0.3].map((d, i) => (
+        <motion.span
+          key={i}
+          className="w-1.5 h-1.5 rounded-full"
+          style={{ background: BRAND.primary }}
+          animate={{ opacity: [0.3, 1, 0.3] }}
+          transition={{ repeat: Infinity, duration: 1, delay: d }}
+        />
+      ))}
+    </div>
+    <span className="text-xs font-semibold text-teal-700">
+      Running test…
+    </span>
+  </div>
+)}
               </div>
             </div>
           </div>
 
           {/* CHAT STREAM */}
           <div className="flex-1 flex flex-col min-h-0">
-            <div className="flex-1 overflow-y-auto pr-2 space-y-6">
+<div className="flex-1 overflow-y-auto pr-2 space-y-6 scroll-smooth">
+        {/* === CHAT CONVERSATION === */}
+           {/* === PREVIOUS RUNS === */}
+{chatRuns.map((run, r) => {
+  const isOpen = expandedRun === r;
+  const title = history[r]?.name ?? "Test";
 
-              {/* === PREVIOUS RUNS === */}
-              {chatRuns.map((run, r) => (
-                <div key={r} className="space-y-6">
-                  {run.map((step) => (
-                    <div key={step.id} className="space-y-2">
-                      <div className="flex items-center gap-2 text-sm font-medium">
-                        <span
-                          className="w-2 h-2 rounded-full"
-                          style={{
-                            background:
-                              step.status === "failed"
-                                ? BRAND.red
-                                : step.status === "success"
-                                ? BRAND.primary
-                                : "#9CA3AF",
-                          }}
-                        />
-                        {step.title}
-                      </div>
+  return (
+    <div key={r} className="border border-gray-200 rounded-xl p-4 bg-white shadow-sm">
 
-                      {mode === "autonomous" && step.logs.length > 0 && (
-                        <div
-                          className="bg-gray-50 border border-gray-200 px-4 py-3 text-sm text-gray-700"
-                          style={{ borderRadius: 4 }}
+      {/* Collapsed header */}
+      <div className="flex items-center justify-between">
+        <div className="text-sm font-semibold text-gray-800">
+          Test run: {title}
+        </div>
+
+        <button
+          onClick={() => setExpandedRun(isOpen ? null : r)}
+          className="text-xs font-medium text-teal-700 hover:underline"
+        >
+          {isOpen ? "Hide details" : "View details"}
+        </button>
+      </div>
+      {history[r] && (
+  <div className="mt-2">
+    <span
+      className="text-xs font-semibold px-3 py-1 rounded-full"
+      style={{
+        background:
+          history[r].result === "Passed" ? "#ECFDF5" : "#FEF2F2",
+        color:
+          history[r].result === "Passed" ? BRAND.primary : BRAND.red,
+      }}
+    >
+      {history[r].result === "Passed" ? "Success" : "Failed"}
+    </span>
+  </div>
+)}
+
+      {/* Expanded content */}
+      <AnimatePresence>
+        {isOpen && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0 }}
+            className="mt-4 space-y-4"
+          >
+            {run.map((step) => (
+              <div key={step.id} className="space-y-1">
+
+                {/* GUIDED → show step label only */}
+                {mode === "guided" && (
+                  <div className="text-sm font-medium text-gray-900">
+                    Step {step.id}: {step.title}
+                  </div>
+                )}
+
+                {/* AUTONOMOUS → preview + expandable reasoning */}
+                {mode === "autonomous" && step.logs.length > 0 && (
+                  <>
+                    {/* Sneak-peek log */}
+                    <div className="text-xs text-gray-600">
+                      {step.logs[0]}
+                    </div>
+
+                    {/* Toggle reasoning */}
+                    <button
+                      onClick={() =>
+                        setExpanded(expanded === step.id ? null : step.id)
+                      }
+                      className="text-xs text-teal-700 hover:underline"
+                    >
+                      {expanded === step.id ? "Hide reasoning" : "Show reasoning"}
+                    </button>
+
+                    <AnimatePresence>
+                      {expanded === step.id && (
+                        <motion.div
+                          initial={{ opacity: 0, y: 6 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0 }}
+                          className="bg-gray-50 border border-gray-200 rounded-md p-3 text-xs space-y-1"
                         >
                           {step.logs.map((log, i) => (
                             <p key={i}>
                               <StreamingText text={log} />
                             </p>
                           ))}
-                        </div>
+                        </motion.div>
                       )}
-                    </div>
-                  ))}
-                </div>
-              ))}
+                    </AnimatePresence>
+                  </>
+                )}
+              </div>
+            ))}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+})}
+{messages.map((m) => {
+  /* ================= USER ================= */
+  if (m.role === "user") {
+    return (
+      <div key={m.id} className="flex justify-end">
+        <div className="max-w-[70%] px-4 py-2 text-sm rounded-2xl shadow-sm bg-teal-600 text-white">
+          {m.text}
+        </div>
+      </div>
+    );
+  }
+
+  /* ================= BOT ================= */
+  if (m.role === "bot") {
+    return (
+      <div key={m.id} className="flex justify-start">
+        <div className="max-w-[70%] px-4 py-2 text-sm rounded-2xl shadow-sm bg-gray-100 text-gray-800">
+          {m.text}
+        </div>
+      </div>
+    );
+  }
+
+  /* ================= EXECUTION CARD ================= */
+if (m.role === "execution") {
+  const isOpen = expandedRun === Number(m.id);
+
+  return (
+<motion.div
+  key={m.id}
+  initial={{ opacity: 0, y: 10 }}
+  animate={{ opacity: 1, y: 0 }}
+  transition={{ duration: 0.25 }}
+  className="flex justify-start"
+>
+  <div className="w-full border border-gray-200 rounded-xl p-4 bg-white shadow-sm">
+        
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <div className="text-sm font-semibold text-gray-800">
+            Test run: {m.testName}
+          </div>
+
+          <button
+            onClick={() => setExpandedRun(isOpen ? null : Number(m.id))}
+            className="text-xs font-medium text-teal-700 hover:underline"
+          >
+            {isOpen ? "Hide details" : "View details"}
+          </button>
+        </div>
+
+        {/* Result badge */}
+        <div className="mt-3">
+          <span
+            className="text-xs font-semibold px-3 py-1 rounded-full"
+            style={{
+              background: m.result === "Passed" ? "#ECFDF5" : "#FEF2F2",
+              color: m.result === "Passed" ? BRAND.primary : BRAND.red,
+            }}
+          >
+            {m.result === "Passed" ? "Success" : "Failed"}
+          </span>
+        </div>
+
+        {/* ================= EXPANDED DETAILS ================= */}
+        {isOpen && (
+          <div className="mt-4 space-y-3">
+            {m.steps.map((step) => (
+              <div key={step.id} className="text-sm text-gray-700">
+                
+                {/* Guided → simple step list */}
+                {mode === "guided" && (
+                  <div>
+                    <span className="font-medium">Step {step.id}:</span> {step.title}
+                  </div>
+                )}
+
+                {/* Autonomous → reasoning logs */}
+{mode === "autonomous" && (
+  <div className="space-y-3 mt-3">
+    <div className="font-medium text-gray-900">{step.title}</div>
+
+{step.logs.map((log, i) => (
+  <motion.p
+    key={i}
+    initial={{ opacity: 0, y: 6 }}
+    animate={{ opacity: 1, y: 0 }}
+    transition={{
+      delay: running ? i * 2.2 : 0, // stagger only while running
+      duration: 0.35,
+      ease: "easeOut",
+    }}
+    className="text-xs text-gray-600 leading-relaxed"
+  >
+    {running ? (
+      <StreamingText text={log} delay={i * 2200} />
+    ) : (
+      log
+    )}
+  </motion.p>
+))}
+
+  </div>
+)}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </motion.div>
+  );
+}
+
+
+  return null;
+})}
 
               {/* === CURRENT RUN === */}
-              {steps.map((step) => {
+              {!finished && steps.map((step) => {
                 const isExpanded = expanded === step.id;
 
                 return (
@@ -467,21 +800,6 @@ export default function ChatLayout() {
                 );
               })}
 
-              {/* RESULT */}
-              {finished && (
-                <div>
-                  <span
-                    className="text-sm font-semibold px-4 py-1.5 rounded-full"
-                    style={{
-                      background: finished === "Passed" ? "#ECFDF5" : "#FEF2F2",
-                      color: finished === "Passed" ? BRAND.primary : BRAND.red,
-                    }}
-                  >
-                    {finished === "Passed" ? "Success" : "Failed"}
-                  </span>
-                </div>
-              )}
-
               <div ref={chatEndRef} />
             </div>
 
@@ -494,7 +812,7 @@ export default function ChatLayout() {
           </div>
 
           {/* INPUT */}
-          <div className="border border-gray-200 bg-white flex items-center gap-3 p-3 mt-4" style={{ borderRadius: 4 }}>
+          <div className="sticky bottom-0 border border-gray-200 bg-white flex items-center gap-3 p-3 mt-4 rounded-xl shadow-sm" style={{ borderRadius: 4 }}>
             <input
               value={input}
               disabled={running}
@@ -517,7 +835,7 @@ export default function ChatLayout() {
             <button
               onClick={runTest}
               disabled={running}
-              className="px-4 py-1 text-white text-sm"
+className="px-4 py-1.5 text-white text-sm font-semibold rounded-md shadow-sm hover:opacity-90 active:scale-[0.98] transition"
               style={{ background: BRAND.primary, borderRadius: 4, opacity: running ? 0.5 : 1 }}
             >
               {running ? "Running…" : "Run"}
@@ -525,9 +843,8 @@ export default function ChatLayout() {
           </div>
 
           {error && <div className="text-red-500 text-sm mt-2">{error}</div>}
-
-          <PreviousTests tests={history} />
         </div>
+        <PreviousTests tests={history} />
         </div>
 
         {/* DEVICE */}
@@ -535,6 +852,7 @@ export default function ChatLayout() {
           <DevicePreview />
         </div>
       </div>
+    </div>
     </div>
   );
 }
