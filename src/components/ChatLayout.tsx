@@ -132,8 +132,11 @@ function DevicePreview() {
 /* ================= PREVIOUS TESTS ================= */
 
 function PreviousTests({ tests }: { tests: TestHistory[] }) {
+  const visible = tests.slice(0, 2);
+  const hasMore = tests.length > 2;
+
   return (
-    <div className="mt-8">
+    <div className="mt-6">
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-sm uppercase tracking-wide" style={{ color: BRAND.gray }}>
           Previous Tests
@@ -146,31 +149,38 @@ function PreviousTests({ tests }: { tests: TestHistory[] }) {
           No previous tests yet.
         </div>
       ) : (
-        <div className="space-y-3">
-          {tests.map((t) => (
-            <div
-              key={t.id}
-              className="flex items-center justify-between bg-white border border-gray-200 px-4 py-4"
-              style={{ borderRadius: 4 }}
-            >
-              <div className="flex items-center gap-3">
-                <div
-                  className="w-2.5 h-2.5 rounded-full"
-                  style={{ background: t.result === "Passed" ? BRAND.primary : BRAND.red }}
-                />
-
-                <div className="text-sm">
-                  <div className="font-medium">{t.name}</div>
-                  <div className="text-gray-400 text-xs">{t.duration}</div>
+        <>
+          <div className="space-y-3">
+            {visible.map((t) => (
+              <div
+                key={t.id}
+                className="flex items-center justify-between bg-white border border-gray-200 px-4 py-4"
+                style={{ borderRadius: 4 }}
+              >
+                <div className="flex items-center gap-3">
+                  <div
+                    className="w-2.5 h-2.5 rounded-full"
+                    style={{ background: t.result === "Passed" ? BRAND.primary : BRAND.red }}
+                  />
+                  <div className="text-sm">
+                    <div className="font-medium">{t.name}</div>
+                    <div className="text-gray-400 text-xs">{t.duration}</div>
+                  </div>
                 </div>
-              </div>
 
-              <button className="text-xs border border-gray-200 px-3 py-1 hover:bg-gray-50" style={{ borderRadius: 4 }}>
-                Report
-              </button>
-            </div>
-          ))}
-        </div>
+                <button className="text-xs border border-gray-200 px-3 py-1 hover:bg-gray-50" style={{ borderRadius: 4 }}>
+                  Report
+                </button>
+              </div>
+            ))}
+          </div>
+
+          {hasMore && (
+            <button className="mt-3 text-xs text-gray-500 hover:text-gray-700">
+              View older tests →
+            </button>
+          )}
+        </>
       )}
     </div>
   );
@@ -334,6 +344,9 @@ export default function ChatLayout() {
       <div className="flex-1 p-6 grid grid-cols-[1fr_360px] gap-8">
         {/* ================= CHAT ================= */}
         <div className="flex flex-col h-[calc(100vh-48px)]">
+
+  {/* CHAT AREA gets full priority height */}
+  <div className="flex flex-col flex-1 min-h-0">
 
           {/* HEADER */}
           <div className="border-b border-gray-200 pb-4 mb-4 flex items-center justify-between">
@@ -512,6 +525,7 @@ export default function ChatLayout() {
           {error && <div className="text-red-500 text-sm mt-2">{error}</div>}
 
           <PreviousTests tests={history} />
+        </div>
         </div>
 
         {/* DEVICE */}
