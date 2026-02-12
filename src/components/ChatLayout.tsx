@@ -17,6 +17,7 @@ type ChatMessage =
       testName: string;
       result: "Passed" | "Failed";
       steps: ExecutionStep[];
+      mode: Mode;
     };
 
 interface ExecutionStep {
@@ -31,6 +32,23 @@ interface TestHistory {
   name: string;
   result: "Passed" | "Failed";
   duration: string;
+}
+function RunningBadge() {
+  return (
+    <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-teal-50 border border-teal-100 gap">
+      
+      {/* perfectly centered pulse */}
+      <span className="relative flex h-2 w-2 items-center justify-center">
+        <span className="absolute h-2 w-2 rounded-full bg-teal-400 animate-ping opacity-75" />
+        <span className="relative h-2 w-2 rounded-full bg-teal-600" />
+      </span>
+
+      {/* text with corrected line-height */}
+      <span className="text-[12px] leading-none font-semibold text-teal-700">
+        Running…
+      </span>
+    </div>
+  );
 }
 /* ================= BRAND ================= */
 
@@ -50,12 +68,6 @@ function ExecuteHeader() {
         <div className="text-sm text-gray-500">
           Execute / Create New Test Flow
         </div>
-        <h1 className="text-2xl font-semibold text-gray-900 mt-1">
-          Execute Test Flow
-        </h1>
-        <p className="text-sm text-gray-500">
-          Select a device to start automating your scenario
-        </p>
       </div>
 
       {/* RIGHT: actions */}
@@ -310,6 +322,68 @@ const buildAutonomousSteps = (task: string, fail: boolean): ExecutionStep[] => [
   },
 ];
 
+function LoveableLogStream({
+  logs,
+  active,
+  onDone,
+}: {
+  logs: string[];
+  active: boolean;
+  onDone?: () => void;
+}) {
+  const [visibleCount, setVisibleCount] = useState(active ? 0 : logs.length);
+
+  useEffect(() => {
+    if (!active) {
+      setVisibleCount(logs.length);
+      return;
+    }
+
+    let cancelled = false;
+
+    const thinkPause = 900;
+    const betweenPause = 1700;
+
+    async function run() {
+      await new Promise((r) => setTimeout(r, thinkPause));
+
+      for (let i = 1; i <= logs.length; i++) {
+        if (cancelled) return;
+
+        setVisibleCount(i);
+
+        if (i < logs.length) {
+          await new Promise((r) => setTimeout(r, betweenPause));
+        }
+      }
+
+      onDone?.(); // ✅ notify execution engine
+    }
+
+    run();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [logs, active]);
+
+  return (
+    <div className="space-y-2">
+      {logs.slice(0, visibleCount).map((log, i) => (
+        <motion.p
+          key={i}
+          initial={{ opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.35 }}
+          className="text-xs text-gray-600 leading-relaxed"
+        >
+          {active ? <StreamingText text={log} /> : log}
+        </motion.p>
+      ))}
+    </div>
+  );
+}
+
 /* ================= MAIN ================= */
 
 export default function ChatLayout() {
@@ -339,10 +413,17 @@ export default function ChatLayout() {
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
+  const chatScrollRef = useRef<HTMLDivElement | null>(null);
 
 useEffect(() => {
-  chatEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-}, [messages, running]);
+  const el = chatScrollRef.current;
+  if (!el) return;
+
+  el.scrollTo({
+    top: el.scrollHeight,
+    behavior: "smooth",
+  });
+}, [messages, running, steps]);
 
   const validateInput = (text: string) => {
     if (!text.trim()) return "Please enter a task to test.";
@@ -350,7 +431,7 @@ useEffect(() => {
     return null;
   };
 
-const runTest = () => {
+const runTest = async () => {
   const validationError = validateInput(input);
   if (validationError) {
     setError(validationError);
@@ -359,7 +440,7 @@ const runTest = () => {
 
   setError(null);
 
-  const taskName = input; // capture before clearing
+  const taskName = input;
   const fail = taskName.toLowerCase().includes("orange");
 
   /* ================= ADD USER MESSAGE FIRST ================= */
@@ -384,90 +465,99 @@ const runTest = () => {
   setFinished(null);
   setExpanded("1");
 
-  let index = 0;
-
-  intervalRef.current = setInterval(() => {
+  /* =========================================================
+     🔥 SEQUENTIAL EXECUTION — waits for logs before next step
+  ========================================================= */
+  for (let i = 0; i < generatedSteps.length; i++) {
+    // mark running step
     setSteps((prev) =>
-      prev.map((s, i) => {
-        if (i < index) return { ...s, status: "success" };
-        if (i === index) return { ...s, status: "running" };
-        return s;
-      })
+      prev.map((s, idx) =>
+        idx < i
+          ? { ...s, status: "success" }
+          : idx === i
+          ? { ...s, status: "running" }
+          : s
+      )
     );
 
-    setExpanded(String(index + 1));
-    index++;
+    setExpanded(String(i + 1));
 
-    /* ================= TEST FINISHED ================= */
-    if (index >= 4) {
-      if (intervalRef.current) clearInterval(intervalRef.current);
+    // ⏳ wait long enough for logs to finish typing
+    const logCount = generatedSteps[i].logs.length || 1;
 
-      const result: "Passed" | "Failed" = fail ? "Failed" : "Passed";
+    const THINK_TIME = 900;
+    const BETWEEN_LOG_TIME = 1700;
+    const TYPE_TIME = 1200;
 
-      setSteps((prev) =>
-        prev.map((s, i) => ({
-          ...s,
-          status: i === 3 && fail ? "failed" : "success",
-        }))
-      );
+    const totalWait =
+      THINK_TIME +
+      logCount * TYPE_TIME +
+      (logCount - 1) * BETWEEN_LOG_TIME;
 
-      setRunning(false);
-      setFinished(result);
-      setExpanded(null);
+    await new Promise((r) => setTimeout(r, totalWait));
+  }
 
-      /* =========================================================
-         INSERT EXECUTION CARD INTO CHAT (CRITICAL FIX)
-         This ensures conversational order:
-         user → execution → bot
-      ========================================================= */
-const executionId = String(Date.now());
+  /* ================= TEST FINISHED ================= */
+  const result: "Passed" | "Failed" = fail ? "Failed" : "Passed";
 
-setMessages((prev) => [
-  ...prev,
-  {
-    id: executionId,
-    role: "execution",
-    testName: taskName,
-    result,
-    steps: generatedSteps,
-  },
-]);
+  setSteps((prev) =>
+    prev.map((s, i) => ({
+      ...s,
+      status: i === prev.length - 1 && fail ? "failed" : "success",
+    }))
+  );
 
-setExpandedRun(null); // 👈 ensure collapsed by default
+  setRunning(false);
+  setFinished(result);
+  setExpanded(null);
 
-      /* ================= BOT FOLLOW-UP MESSAGE ================= */
-setMessages((prev): ChatMessage[] => {
-  const botMessage: ChatMessage = {
-    id: Date.now() + "-bot",
-    role: "bot",
-    text:
-      result === "Passed"
-        ? "Great! The test passed. Would you like me to validate another flow?"
-        : "I found a failure. Want me to debug it or try another scenario?",
-  };
+  /* ================= EXECUTION CARD ================= */
+  const executionId = String(Date.now());
 
-  const updated = [...prev, botMessage];
+  setMessages((prev) => [
+    ...prev,
+    {
+      id: executionId,
+      role: "execution",
+      testName: taskName,
+      result,
+      steps: generatedSteps,
+      mode
+    },
+  ]);
 
-  // scroll AFTER DOM paint
-  setTimeout(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, 50);
+  setExpandedRun(null);
 
-  return updated;
-});
+  /* ================= BOT FOLLOW-UP ================= */
+  setMessages((prev): ChatMessage[] => {
+    const botMessage: ChatMessage = {
+      id: Date.now() + "-bot",
+      role: "bot",
+      text:
+        result === "Passed"
+          ? "Great! The test passed. Would you like me to validate another flow?"
+          : "I found a failure. Want me to debug it or try another scenario?",
+    };
 
+    const updated = [...prev, botMessage];
 
-      /* ================= HISTORY SIDEBAR ================= */
-      setHistory((h) => [
-        { id: Date.now(), name: taskName, result, duration: "1m 42s" },
-        ...h,
-      ]);
+    setTimeout(() => {
+      chatEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    }, 50);
 
-      /* ================= CLEAR INPUT ================= */
-      setInput("");
-    }
-  }, 1800);
+    return updated;
+  });
+
+  /* ================= HISTORY ================= */
+  setHistory((h) => [
+    { id: Date.now(), name: taskName, result, duration: "1m 42s" },
+    ...h,
+  ]);
+
+  /* ================= CLEAR INPUT ================= */
+  setInput("");
 };
+
 
 
 
@@ -500,34 +590,19 @@ shadow-sm
           {/* HEADER */}
           <div className="border-b border-gray-200 pb-4 mb-4 flex items-center justify-between">
             <div>
-              <div className="text-xs text-gray-400">Android Emulator • QA Execution</div>
               <div className="flex items-center gap-3">
                 <h1 className="text-lg font-semibold">{history[0]?.name || "New QA Task"}</h1>
-                {running && (
-  <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-teal-50">
-    <div className="flex gap-1">
-      {[0, 0.15, 0.3].map((d, i) => (
-        <motion.span
-          key={i}
-          className="w-1.5 h-1.5 rounded-full"
-          style={{ background: BRAND.primary }}
-          animate={{ opacity: [0.3, 1, 0.3] }}
-          transition={{ repeat: Infinity, duration: 1, delay: d }}
-        />
-      ))}
-    </div>
-    <span className="text-xs font-semibold text-teal-700">
-      Running test…
-    </span>
-  </div>
-)}
+{running && <RunningBadge />}
               </div>
             </div>
           </div>
 
           {/* CHAT STREAM */}
           <div className="flex-1 flex flex-col min-h-0">
-<div className="flex-1 overflow-y-auto pr-2 space-y-6 scroll-smooth">
+<div
+  ref={chatScrollRef}
+  className="flex-1 overflow-y-auto pr-2 space-y-6"
+>
         {/* === CHAT CONVERSATION === */}
            {/* === PREVIOUS RUNS === */}
 {chatRuns.map((run, r) => {
@@ -655,7 +730,7 @@ shadow-sm
   /* ================= EXECUTION CARD ================= */
 if (m.role === "execution") {
   const isOpen = expandedRun === Number(m.id);
-
+  const executionMode = m.mode; 
   return (
 <motion.div
   key={m.id}
@@ -700,14 +775,14 @@ if (m.role === "execution") {
               <div key={step.id} className="text-sm text-gray-700">
                 
                 {/* Guided → simple step list */}
-                {mode === "guided" && (
+                {executionMode === "guided" && (
                   <div>
                     <span className="font-medium">Step {step.id}:</span> {step.title}
                   </div>
                 )}
 
                 {/* Autonomous → reasoning logs */}
-{mode === "autonomous" && (
+{executionMode === "autonomous" && (
   <div className="space-y-3 mt-3">
     <div className="font-medium text-gray-900">{step.title}</div>
 
@@ -775,14 +850,24 @@ if (m.role === "execution") {
                               initial={{ opacity: 0, y: 6 }}
                               animate={{ opacity: 1, y: 0 }}
                               exit={{ opacity: 0 }}
-                              className="bg-gray-50 border border-gray-200 px-4 py-3 text-sm text-gray-700"
+                              className="px-4 py-3 text-sm text-gray-800
+bg-white/40
+backdrop-blur-md backdrop-saturate-150
+border border-teal-100
+shadow-[0_4px_16px_rgba(1,157,145,0.08)]
+rounded-[4px]"
                               style={{ borderRadius: 4 }}
                             >
-                              {step.logs.map((log, i) => (
-                                <p key={i}>
-                                  <StreamingText text={log} />
-                                </p>
-                              ))}
+                              {mode === "autonomous" && (
+  <div className="space-y-3 mt-3">
+    <div className="font-medium text-gray-900">{step.title}</div>
+
+    <LoveableLogStream
+      logs={step.logs}
+      active={running}
+    />
+  </div>
+)}
 
                               {step.status !== "pending" && (
                                 <button
@@ -828,25 +913,60 @@ if (m.role === "execution") {
               className="flex-1 outline-none text-sm px-2 disabled:opacity-50"
             />
 
-            <select
-              value={mode}
-              disabled={running}
-              onChange={(e) => setMode(e.target.value as Mode)}
-              className="text-sm px-2 py-1 border"
-              style={{ borderRadius: 4 }}
-            >
-              <option value="guided">Guided</option>
-              <option value="autonomous">Autonomous</option>
-            </select>
+            {/* MODE TOGGLE */}
+<div className="flex items-center bg-gray-100 rounded-lg p-1">
+  {(["guided", "autonomous"] as Mode[]).map((m) => {
+    const active = mode === m;
 
-            <button
-              onClick={runTest}
-              disabled={running}
-className="px-4 py-1.5 text-white text-sm font-semibold rounded-md shadow-sm hover:opacity-90 active:scale-[0.98] transition"
-              style={{ background: BRAND.primary, borderRadius: 4, opacity: running ? 0.5 : 1 }}
-            >
-              {running ? "Running…" : "Run"}
-            </button>
+    return (
+      <button
+        key={m}
+        disabled={running}
+        onClick={() => setMode(m)}
+        className={`
+          px-3 py-1.5 text-xs font-semibold rounded-md transition-all
+          ${active
+            ? "bg-white shadow-sm text-gray-900"
+            : "text-gray-500 hover:text-gray-700"}
+          ${running ? "opacity-50 cursor-not-allowed" : ""}
+        `}
+      >
+        {m === "guided" ? "Guided" : "Autonomous"}
+      </button>
+    );
+  })}
+</div>
+
+{/* RUN BUTTON */}
+<button
+  onClick={runTest}
+  disabled={running}
+  className={`
+    flex items-center justify-center gap-2
+    px-5 py-2 text-sm font-semibold rounded-lg
+    text-white transition-all duration-200
+    focus:outline-none focus:ring-2 focus:ring-teal-500/40
+    ${running
+      ? "bg-teal-500/70 cursor-not-allowed"
+      : "bg-teal-600 hover:bg-teal-700 active:scale-[0.97] shadow-sm"}
+  `}
+>
+  {running && (
+    <span className="flex items-center gap-1">
+      {[0, 0.15, 0.3].map((d, i) => (
+        <span
+          key={i}
+          className="w-1.5 h-1.5 rounded-full bg-white/90 animate-pulse"
+          style={{ animationDelay: `${d}s` }}
+        />
+      ))}
+    </span>
+  )}
+
+  <span className="min-w-[64px] text-center">
+    {running ? "Running…" : "Run"}
+  </span>
+</button>
           </div>
 
           {error && <div className="text-red-500 text-sm mt-2">{error}</div>}
