@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { Activity, Link2, RefreshCw, Plus } from "lucide-react";
 
 /* ================= TYPES ================= */
 
@@ -62,25 +63,27 @@ const BRAND = {
 function ExecuteHeader() {
   return (
     <div className="w-full border-b border-gray-200 bg-white px-6 py-4 flex items-center justify-between">
-      
-      {/* LEFT: breadcrumb + title */}
+
+      {/* LEFT */}
       <div>
         <div className="text-sm text-gray-500">
           Execute / Create New Test Flow
         </div>
       </div>
 
-      {/* RIGHT: actions */}
+      {/* RIGHT ACTIONS */}
       <div className="flex items-center gap-3">
-        <button className="px-4 py-2 rounded-lg border border-teal-500 text-teal-600 font-medium hover:bg-teal-50 transition">
-          Refresh
+
+        {/* Bridge */}
+        <button className="flex items-center gap-2 px-4 py-2 rounded-lg border border-[#019D91] text-teal-700 bg-white hover:bg-teal-50 transition text-sm font-medium">
+          <Link2 className="w-4 h-4" />
+          Bridge
         </button>
 
-        <button
-          className="px-5 py-2 rounded-lg text-white font-semibold shadow-sm hover:opacity-90 transition"
-          style={{ background: BRAND.primary }}
-        >
-          + Connect Device
+        {/* Health */}
+        <button className="flex items-center gap-2 px-4 py-2 rounded-lg border border-[#019D91] text-teal-700 bg-white hover:bg-teal-50 transition text-sm font-medium">
+          <Activity className="w-4 h-4" />
+          Health
         </button>
       </div>
     </div>
@@ -480,21 +483,27 @@ const runTest = async () => {
       )
     );
 
-    setExpanded(String(i + 1));
+// expand current step
+setExpanded(String(i + 1));
 
-    // ⏳ wait long enough for logs to finish typing
-    const logCount = generatedSteps[i].logs.length || 1;
+// ⏳ wait for logs to finish typing
+const logCount = generatedSteps[i].logs.length || 1;
 
-    const THINK_TIME = 900;
-    const BETWEEN_LOG_TIME = 1700;
-    const TYPE_TIME = 1200;
+const THINK_TIME = 900;
+const BETWEEN_LOG_TIME = 1700;
+const TYPE_TIME = 1200;
 
-    const totalWait =
-      THINK_TIME +
-      logCount * TYPE_TIME +
-      (logCount - 1) * BETWEEN_LOG_TIME;
+const totalWait =
+  THINK_TIME +
+  logCount * TYPE_TIME +
+  (logCount - 1) * BETWEEN_LOG_TIME;
 
-    await new Promise((r) => setTimeout(r, totalWait));
+await new Promise((r) => setTimeout(r, totalWait));
+
+// 🔽 auto-collapse after logs finish
+setExpanded(null);
+
+ await new Promise((r) => setTimeout(r, 250));
   }
 
   /* ================= TEST FINISHED ================= */
@@ -587,15 +596,34 @@ border border-gray-200
 shadow-sm
 " style={{ borderRadius: 4 }}>
 
-          {/* HEADER */}
-          <div className="border-b border-gray-200 pb-4 mb-4 flex items-center justify-between">
-            <div>
-              <div className="flex items-center gap-3">
-                <h1 className="text-lg font-semibold">{history[0]?.name || "New QA Task"}</h1>
-{running && <RunningBadge />}
-              </div>
-            </div>
-          </div>
+{/* HEADER */}
+<div className="border-b border-gray-200 pb-4 mb-4 flex items-center justify-between">
+
+  {/* LEFT: title */}
+  <div className="flex items-center gap-3">
+    <h1 className="text-lg font-semibold">
+      {history[0]?.name || "New QA Task"}
+    </h1>
+    {running && <RunningBadge />}
+  </div>
+
+  {/* RIGHT: actions */}
+  <div className="flex items-center gap-3">
+
+    {/* Refresh */}
+    <button className="flex items-center gap-2 px-4 py-2 rounded-lg border border-teal-500 text-teal-700 bg-white hover:bg-teal-50 transition text-sm font-medium">
+      <RefreshCw className="w-4 h-4" />
+      Refresh
+    </button>
+
+    {/* Connect Device */}
+    <button className="flex items-center gap-2 px-5 py-2 rounded-lg text-white font-semibold shadow-sm hover:opacity-90 transition bg-teal-600">
+      <Plus className="w-4 h-4" />
+      Connect Device
+    </button>
+
+  </div>
+</div>
 
           {/* CHAT STREAM */}
           <div className="flex-1 flex flex-col min-h-0">
@@ -784,7 +812,7 @@ if (m.role === "execution") {
                 {/* Autonomous → reasoning logs */}
 {executionMode === "autonomous" && (
   <div className="space-y-3 mt-3">
-    <div className="font-medium text-gray-900">{step.title}</div>
+    <div className="font-medium text-[#019D91]">{step.title}</div>
 
 {step.logs.map((log, i) => (
   <motion.p
@@ -860,7 +888,28 @@ rounded-[4px]"
                             >
                               {mode === "autonomous" && (
   <div className="space-y-3 mt-3">
-    <div className="font-medium text-gray-900">{step.title}</div>
+   <div
+  className={`
+    flex items-center gap-2 text-[13px] font-semibold tracking-tight
+    ${step.status === "running"
+      ? "text-teal-700"
+      : "text-gray-500"}
+  `}
+>
+  <span
+    className={`
+      w-1.5 h-1.5 rounded-full
+      ${step.status === "running"
+        ? "bg-teal-500 shadow-[0_0_8px_rgba(16,185,129,0.7)] animate-pulse"
+        : step.status === "success"
+        ? "bg-teal-500"
+        : step.status === "failed"
+        ? "bg-red-500"
+        : "bg-gray-300"}
+    `}
+  />
+  {step.title}
+</div>
 
     <LoveableLogStream
       logs={step.logs}
@@ -971,7 +1020,6 @@ rounded-[4px]"
 
           {error && <div className="text-red-500 text-sm mt-2">{error}</div>}
         </div>
-        <PreviousTests tests={history} />
         </div>
 
         {/* DEVICE */}
