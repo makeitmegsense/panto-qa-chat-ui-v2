@@ -494,18 +494,35 @@ async function executeScenario(
      FINAL RESULT — SINGLE SOURCE OF TRUTH
      Ensures FAILED test NEVER shows success logs
   ========================================================= */
-  const result: "Passed" | "Failed" = fail ? "Failed" : "Passed";
+/* =========================================================
+   FINAL RESULT + FAILED STEP DETECTION
+========================================================= */
+const result: "Passed" | "Failed" = fail ? "Failed" : "Passed";
 
-  const finalizedSteps: ExecutionStep[] = generatedSteps.map((s, i) => ({
+/* 
+   Fail ONLY the last step.
+   Everything before it must be success.
+*/
+const failedStepIndex = fail ? generatedSteps.length - 1 : -1;
+
+/* =========================================================
+   FREEZE FINAL STEPS (single source of truth for UI)
+========================================================= */
+const finalizedSteps: ExecutionStep[] = generatedSteps.map((s, i) => {
+  let status: StepStatus;
+
+  if (i === failedStepIndex) {
+    status = "failed";
+  } else {
+    status = "success";
+  }
+
+  return {
     ...s,
-    status:
-      i === generatedSteps.length - 1
-        ? fail
-          ? "failed"
-          : "success"
-        : "success",
-    logs: [...s.logs], // 🔒 freeze logs snapshot
-  }));
+    status,
+    logs: [...s.logs], // freeze logs to avoid mutation bugs
+  };
+});
 
   /* ================= CLEANUP UI STATE ================= */
   setSteps(finalizedSteps);
@@ -834,16 +851,6 @@ if (m.role === "execution") {
           </span>
         </div>
 
-        {m.canRetry && (
-  <button
-    onClick={() => runTest(m.testName, 0)}
-    className="mt-4 text-xs font-semibold px-3 py-1.5 rounded-md
-               bg-teal-600 text-white hover:bg-teal-700 transition"
-  >
-    Retry test
-  </button>
-)}
-
         {/* ================= EXPANDED DETAILS ================= */}
         {isOpen && (
           <div className="mt-4 space-y-3">
@@ -852,15 +859,47 @@ if (m.role === "execution") {
                 
                 {/* Guided → simple step list */}
                 {executionMode === "guided" && (
-                  <div>
-                    <span className="font-medium">Step {step.id}:</span> {step.title}
-                  </div>
-                )}
+  <div
+    className={`
+      flex items-center gap-2 text-sm font-medium
+      ${step.status === "failed"
+        ? "text-red-600"
+        : step.status === "success"
+        ? "text-teal-700"
+        : "text-gray-500"}
+    `}
+  >
+    {/* status dot */}
+    <span
+      className={`
+        w-2 h-2 rounded-full
+        ${step.status === "failed"
+          ? "bg-red-500"
+          : step.status === "success"
+          ? "bg-teal-500"
+          : "bg-gray-300"}
+      `}
+    />
+
+    Step {step.id}: {step.title}
+  </div>
+)}
 
                 {/* Autonomous → reasoning logs */}
 {executionMode === "autonomous" && (
   <div className="space-y-3 mt-3">
-    <div className="font-medium text-[#019D91]">{step.title}</div>
+   <div
+  className={`
+    font-medium
+    ${
+      step.status === "failed"
+        ? "text-red-600"
+        : "text-[#019D91]"
+    }
+  `}
+>
+  {step.title}
+</div>
 
 {step.logs.map((log, i) => (
   <motion.p
@@ -884,6 +923,26 @@ if (m.role === "execution") {
             ))}
           </div>
         )}
+                {m.canRetry && (
+ <button
+  onClick={() => runTest(m.testName, 0)}
+  className="
+    mt-4 inline-flex items-center gap-2
+    px-3.5 py-1.5 rounded-lg
+    text-xs font-semibold
+    bg-white text-teal-700
+    border border-[#019D91]
+    shadow-sm
+    hover:bg-teal-50 hover:border-teal-300
+    active:scale-[0.97]
+    transition-all duration-150
+    focus:outline-none focus:ring-2 focus:ring-teal-500/30
+  "
+>
+  <RefreshCw className="w-3.5 h-3.5" />
+  Retry test
+</button>
+)}
       </div>
     </motion.div>
   );
@@ -942,14 +1001,14 @@ rounded-[4px]"
 >
   <span
     className={`
-      w-1.5 h-1.5 rounded-full
-      ${step.status === "running"
-        ? "bg-teal-500 shadow-[0_0_8px_rgba(16,185,129,0.7)] animate-pulse"
+      ${
+      step.status === "failed"
+        ? "text-red-600 font-semibold"
+        : step.status === "running"
+        ? "text-teal-700"
         : step.status === "success"
-        ? "bg-teal-500"
-        : step.status === "failed"
-        ? "bg-red-500"
-        : "bg-gray-300"}
+        ? "text-teal-700"
+        : "text-gray-500"}
     `}
   />
   {step.title}
