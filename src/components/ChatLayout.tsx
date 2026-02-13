@@ -19,6 +19,8 @@ type ChatMessage =
       result: "Passed" | "Failed";
       steps: ExecutionStep[];
       mode: Mode;
+      retries?: number;
+      canRetry?: boolean;
     };
 
 interface ExecutionStep {
@@ -400,7 +402,7 @@ export default function ChatLayout() {
   const [history, setHistory] = useState<TestHistory[]>([]);
   const [chatRuns, setChatRuns] = useState<ExecutionStep[][]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [expandedRun, setExpandedRun] = useState<number | null>(null);
+  const [expandedRun, setExpandedRun] = useState<string | null>(null);
   const [currentTestName, setCurrentTestName] = useState<string | null>(null);
 
 
@@ -433,27 +435,17 @@ useEffect(() => {
     if (text.length < 3) return "Task description is too short.";
     return null;
   };
-
-const runTest = async () => {
-  const validationError = validateInput(input);
-  if (validationError) {
-    setError(validationError);
-    return;
-  }
-
-  setError(null);
-
-  const taskName = input;
-  const fail = taskName.toLowerCase().includes("orange");
-
-  /* ================= ADD USER MESSAGE FIRST ================= */
-  setMessages((prev) => [
-    ...prev,
-    { id: Date.now() + "-user", role: "user", text: taskName },
-  ]);
-
+async function executeScenario(
+  taskName: string,
+  mode: Mode,
+  fail: boolean,
+  retryCount: number
+): Promise<{
+  result: "Passed" | "Failed";
+  steps: ExecutionStep[];
+}> {
   /* ================= BUILD STEPS ================= */
-  const generatedSteps =
+  const generatedSteps: ExecutionStep[] =
     mode === "guided"
       ? GUIDED_STEPS.map((title, i) => ({
           id: String(i + 1),
@@ -463,16 +455,17 @@ const runTest = async () => {
         }))
       : buildAutonomousSteps(taskName, fail);
 
+  /* ================= INIT UI STATE ================= */
   setSteps(generatedSteps);
   setRunning(true);
   setFinished(null);
   setExpanded("1");
 
   /* =========================================================
-     🔥 SEQUENTIAL EXECUTION — waits for logs before next step
+     SEQUENTIAL EXECUTION — waits for logs to fully stream
   ========================================================= */
   for (let i = 0; i < generatedSteps.length; i++) {
-    // mark running step
+    /* ----- mark running step ----- */
     setSteps((prev) =>
       prev.map((s, idx) =>
         idx < i
@@ -483,46 +476,103 @@ const runTest = async () => {
       )
     );
 
-// expand current step
-setExpanded(String(i + 1));
+    setExpanded(String(i + 1));
 
-// ⏳ wait for logs to finish typing
-const logCount = generatedSteps[i].logs.length || 1;
+    /* ----- realistic timing based on logs ----- */
+    const logCount = generatedSteps[i].logs.length || 1;
 
-const THINK_TIME = 900;
-const BETWEEN_LOG_TIME = 1700;
-const TYPE_TIME = 1200;
+    const THINK = 900;      // pause before thinking
+    const TYPE = 1200;      // typing duration per log
+    const BETWEEN = 1700;   // pause between logs
 
-const totalWait =
-  THINK_TIME +
-  logCount * TYPE_TIME +
-  (logCount - 1) * BETWEEN_LOG_TIME;
+    const wait = THINK + logCount * TYPE + (logCount - 1) * BETWEEN;
 
-await new Promise((r) => setTimeout(r, totalWait));
-
-// 🔽 auto-collapse after logs finish
-setExpanded(null);
-
- await new Promise((r) => setTimeout(r, 250));
+    await new Promise((r) => setTimeout(r, wait));
   }
 
-  /* ================= TEST FINISHED ================= */
+  /* =========================================================
+     FINAL RESULT — SINGLE SOURCE OF TRUTH
+     Ensures FAILED test NEVER shows success logs
+  ========================================================= */
   const result: "Passed" | "Failed" = fail ? "Failed" : "Passed";
 
-  setSteps((prev) =>
-    prev.map((s, i) => ({
-      ...s,
-      status: i === prev.length - 1 && fail ? "failed" : "success",
-    }))
-  );
+  const finalizedSteps: ExecutionStep[] = generatedSteps.map((s, i) => ({
+    ...s,
+    status:
+      i === generatedSteps.length - 1
+        ? fail
+          ? "failed"
+          : "success"
+        : "success",
+    logs: [...s.logs], // 🔒 freeze logs snapshot
+  }));
 
+  /* ================= CLEANUP UI STATE ================= */
+  setSteps(finalizedSteps);
   setRunning(false);
   setFinished(result);
   setExpanded(null);
 
-  /* ================= EXECUTION CARD ================= */
-  const executionId = String(Date.now());
+  /* =========================================================
+     RETURN ATOMIC SNAPSHOT
+     (used by retry system + execution history card)
+  ========================================================= */
+  return {
+    result,
+    steps: finalizedSteps,
+  };
+}
 
+
+const runTest = async (taskOverride?: string, retryCount = 0) => {
+  const taskName = taskOverride ?? input;
+
+  const validationError = validateInput(taskName);
+  if (validationError) {
+    setError(validationError);
+    return;
+  }
+
+  setError(null);
+
+  /* ================= USER MESSAGE ================= */
+  if (!taskOverride) {
+    setMessages((prev) => [
+      ...prev,
+      { id: Date.now() + "-user", role: "user", text: taskName },
+    ]);
+  }
+
+  /* ================= EXECUTION ================= */
+const fail = taskName.toLowerCase().includes("orange");
+
+const { result, steps: finalSteps } = await executeScenario(
+  taskName,
+  mode,
+  fail,
+  retryCount
+);
+
+
+
+  /* ================= AUTONOMOUS AUTO-RETRY ================= */
+  if (mode === "autonomous" && result === "Failed" && retryCount < 2) {
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: Date.now() + "-bot",
+        role: "bot",
+        text: `Retrying automatically (${retryCount + 1}/3)…`,
+      },
+    ]);
+
+    return runTest(taskName, retryCount + 1);
+  }
+
+  const executionId = String(Date.now());
+  const canRetry = result === "Failed";
+
+  /* ================= EXECUTION CARD ================= */
   setMessages((prev) => [
     ...prev,
     {
@@ -530,32 +580,25 @@ setExpanded(null);
       role: "execution",
       testName: taskName,
       result,
-      steps: generatedSteps,
-      mode
+      steps: finalSteps, // ✅ correct snapshot
+      mode,
+      retries: retryCount,
+      canRetry,
     },
   ]);
 
-  setExpandedRun(null);
+  /* ================= BOT RESPONSE ================= */
+  const text =
+    result === "Passed"
+      ? "Great! The test passed. Would you like me to validate another flow?"
+      : mode === "autonomous"
+      ? "I tried fixing this 3 times but it still failed. Would you like me to retry manually or debug it?"
+      : "The test failed. Would you like to retry?";
 
-  /* ================= BOT FOLLOW-UP ================= */
-  setMessages((prev): ChatMessage[] => {
-    const botMessage: ChatMessage = {
-      id: Date.now() + "-bot",
-      role: "bot",
-      text:
-        result === "Passed"
-          ? "Great! The test passed. Would you like me to validate another flow?"
-          : "I found a failure. Want me to debug it or try another scenario?",
-    };
-
-    const updated = [...prev, botMessage];
-
-    setTimeout(() => {
-      chatEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-    }, 50);
-
-    return updated;
-  });
+  setMessages((prev) => [
+    ...prev,
+    { id: Date.now() + "-bot", role: "bot", text },
+  ]);
 
   /* ================= HISTORY ================= */
   setHistory((h) => [
@@ -563,15 +606,10 @@ setExpanded(null);
     ...h,
   ]);
 
-  /* ================= CLEAR INPUT ================= */
   setInput("");
 };
 
-
-
-
-
-  return (
+return (
 <div className="flex bg-white h-screen overflow-hidden text-gray-900">
     <Sidebar />
 
@@ -634,7 +672,7 @@ shadow-sm
         {/* === CHAT CONVERSATION === */}
            {/* === PREVIOUS RUNS === */}
 {chatRuns.map((run, r) => {
-  const isOpen = expandedRun === r;
+  const isOpen = expandedRun === String(r);
   const title = history[r]?.name ?? "Test";
 
   return (
@@ -647,7 +685,7 @@ shadow-sm
         </div>
 
         <button
-          onClick={() => setExpandedRun(isOpen ? null : r)}
+          onClick={() => setExpandedRun(isOpen ? null : String(r))}
           className="text-xs font-medium text-teal-700 hover:underline"
         >
           {isOpen ? "Hide details" : "View details"}
@@ -757,7 +795,7 @@ shadow-sm
 
   /* ================= EXECUTION CARD ================= */
 if (m.role === "execution") {
-  const isOpen = expandedRun === Number(m.id);
+  const isOpen = expandedRun === m.id;
   const executionMode = m.mode; 
   return (
 <motion.div
@@ -776,7 +814,7 @@ if (m.role === "execution") {
           </div>
 
           <button
-            onClick={() => setExpandedRun(isOpen ? null : Number(m.id))}
+            onClick={() => setExpandedRun(isOpen ? null : m.id)}
             className="text-xs font-medium text-teal-700 hover:underline"
           >
             {isOpen ? "Hide details" : "View details"}
@@ -795,6 +833,16 @@ if (m.role === "execution") {
             {m.result === "Passed" ? "Success" : "Failed"}
           </span>
         </div>
+
+        {m.canRetry && (
+  <button
+    onClick={() => runTest(m.testName, 0)}
+    className="mt-4 text-xs font-semibold px-3 py-1.5 rounded-md
+               bg-teal-600 text-white hover:bg-teal-700 transition"
+  >
+    Retry test
+  </button>
+)}
 
         {/* ================= EXPANDED DETAILS ================= */}
         {isOpen && (
@@ -826,11 +874,7 @@ if (m.role === "execution") {
     }}
     className="text-xs text-gray-600 leading-relaxed"
   >
-    {running ? (
-      <StreamingText text={log} delay={i * 2200} />
-    ) : (
-      log
-    )}
+    {log}
   </motion.p>
 ))}
 
@@ -988,7 +1032,7 @@ rounded-[4px]"
 
 {/* RUN BUTTON */}
 <button
-  onClick={runTest}
+  onClick={() => runTest()}
   disabled={running}
   className={`
     flex items-center justify-center gap-2
